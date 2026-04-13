@@ -1,0 +1,39 @@
+{
+  "manifest_version": "0.2",
+  "name": "ViGEm Controller",
+  "version": "2.0.0",
+  "description": "Virtual Xbox 360 and DualShock 4 gamepad emulation via ViGEmBus — runs locally via stdio.",
+  "author": {
+    "name": "Heartran",
+    "email": "heartran@papin-network.it",
+    "url": "https://github.com/Heartran"
+  },
+  "homepage": "https://github.com/Heartran/vigem-mcp",
+  "documentation": "https://github.com/Heartran/vigem-mcp/blob/main/README.md",
+  "icon": "icon.png",
+  "server": {
+    "type": "python",
+    "entry_point": "vigem_server.py",
+    "mcp_config": {
+      "command": "C:\\Users\\Federico\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+      "args": [
+        "C:\\Users\\Federico\\AppData\\Roaming\\Claude\\Claude Extensions\\local.mcpb.heartran.vigem-mcp\\vigem_server.py"
+      ]
+    }
+  },
+  "keywords": [
+    "gamepad",
+    "controller",
+    "vigem",
+    "xbox360",
+    "dualshock4",
+    "input",
+    "emulation",
+    "windows"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Heartran/vigem-mcp"
+  }
+}

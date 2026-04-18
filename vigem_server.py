@@ -14,75 +14,111 @@ Transport:  stdio (locale)
 
 import asyncio
 import json
+import sys
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from importlib.metadata import version
 from typing import Any
 
-import vgamepad as vg
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, ConfigDict
 
 
 # ---------------------------------------------------------------------------
-# Costanti
+# Lazy vgamepad import — il modulo crea un VBus() a livello globale,
+# che fallisce se il driver ViGEmBus non è raggiungibile.
+# Deferendo l'import al lifespan, il server MCP si avvia sempre e
+# riporta un errore chiaro invece di crashare al modulo.
 # ---------------------------------------------------------------------------
 
-# Mappa nome → costante VigEm per i tool che accettano button come stringa (Xbox 360)
-BUTTON_MAP: dict[str, int] = {
-    "A":     vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
-    "B":     vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
-    "X":     vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
-    "Y":     vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
-    "UP":    vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
-    "DOWN":  vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
-    "LEFT":  vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
-    "RIGHT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
-    "LB":    vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
-    "RB":    vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
-    "START": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
-    "BACK":  vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
-    "L3":    vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
-    "R3":    vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
-    "GUIDE": vg.XUSB_BUTTON.XUSB_GAMEPAD_GUIDE,
-}
+vg = None  # populated by _init_vgamepad()
+_vg_error: str | None = None
 
-VALID_BUTTONS = list(BUTTON_MAP.keys())
+def _init_vgamepad():
+    """Importa vgamepad e costruisce le mappe bottoni. Chiamato dal lifespan."""
+    global vg, _vg_error
+    global BUTTON_MAP, VALID_BUTTONS
+    global DS4_BUTTON_MAP, DS4_DPAD_MAP, DS4_SPECIAL_MAP, DS4_VALID_BUTTONS
+    try:
+        import vgamepad as _vg
+        vg = _vg
+    except Exception as e:
+        _vg_error = (
+            f"Impossibile importare vgamepad: {e}. "
+            "Verificare che il driver ViGEmBus sia installato e il device node esista. "
+            "Eseguire come admin: nefconw --create-device-node "
+            "--hardware-id Nefarius\\ViGEmBus\\Gen1 "
+            "--class-name System --class-guid {{4D36E97D-E325-11CE-BFC1-08002BE10318}}"
+        )
+        print(f"[vigem_mcp] WARNING: {_vg_error}", file=sys.stderr)
+        return
 
-# Mappe DS4
-DS4_BUTTON_MAP = {
-    "CROSS":    vg.DS4_BUTTONS.DS4_BUTTON_CROSS,
-    "CIRCLE":   vg.DS4_BUTTONS.DS4_BUTTON_CIRCLE,
-    "SQUARE":   vg.DS4_BUTTONS.DS4_BUTTON_SQUARE,
-    "TRIANGLE": vg.DS4_BUTTONS.DS4_BUTTON_TRIANGLE,
-    "L1":       vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_LEFT,
-    "R1":       vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT,
-    "L2":       vg.DS4_BUTTONS.DS4_BUTTON_TRIGGER_LEFT,
-    "R2":       vg.DS4_BUTTONS.DS4_BUTTON_TRIGGER_RIGHT,
-    "L3":       vg.DS4_BUTTONS.DS4_BUTTON_THUMB_LEFT,
-    "R3":       vg.DS4_BUTTONS.DS4_BUTTON_THUMB_RIGHT,
-    "SHARE":    vg.DS4_BUTTONS.DS4_BUTTON_SHARE,
-    "OPTIONS":  vg.DS4_BUTTONS.DS4_BUTTON_OPTIONS,
-}
+    BUTTON_MAP.update({
+        "A":     vg.XUSB_BUTTON.XUSB_GAMEPAD_A,
+        "B":     vg.XUSB_BUTTON.XUSB_GAMEPAD_B,
+        "X":     vg.XUSB_BUTTON.XUSB_GAMEPAD_X,
+        "Y":     vg.XUSB_BUTTON.XUSB_GAMEPAD_Y,
+        "UP":    vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_UP,
+        "DOWN":  vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_DOWN,
+        "LEFT":  vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_LEFT,
+        "RIGHT": vg.XUSB_BUTTON.XUSB_GAMEPAD_DPAD_RIGHT,
+        "LB":    vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_SHOULDER,
+        "RB":    vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_SHOULDER,
+        "START": vg.XUSB_BUTTON.XUSB_GAMEPAD_START,
+        "BACK":  vg.XUSB_BUTTON.XUSB_GAMEPAD_BACK,
+        "L3":    vg.XUSB_BUTTON.XUSB_GAMEPAD_LEFT_THUMB,
+        "R3":    vg.XUSB_BUTTON.XUSB_GAMEPAD_RIGHT_THUMB,
+        "GUIDE": vg.XUSB_BUTTON.XUSB_GAMEPAD_GUIDE,
+    })
+    VALID_BUTTONS.extend(BUTTON_MAP.keys())
 
-DS4_DPAD_MAP = {
-    "UP":         vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTH,
-    "DOWN":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTH,
-    "LEFT":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_WEST,
-    "RIGHT":      vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_EAST,
-    "UP_RIGHT":   vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTHEAST,
-    "UP_LEFT":    vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTHWEST,
-    "DOWN_RIGHT": vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTHEAST,
-    "DOWN_LEFT":  vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTHWEST,
-    "NONE":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NONE,
-}
+    DS4_BUTTON_MAP.update({
+        "CROSS":    vg.DS4_BUTTONS.DS4_BUTTON_CROSS,
+        "CIRCLE":   vg.DS4_BUTTONS.DS4_BUTTON_CIRCLE,
+        "SQUARE":   vg.DS4_BUTTONS.DS4_BUTTON_SQUARE,
+        "TRIANGLE": vg.DS4_BUTTONS.DS4_BUTTON_TRIANGLE,
+        "L1":       vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_LEFT,
+        "R1":       vg.DS4_BUTTONS.DS4_BUTTON_SHOULDER_RIGHT,
+        "L2":       vg.DS4_BUTTONS.DS4_BUTTON_TRIGGER_LEFT,
+        "R2":       vg.DS4_BUTTONS.DS4_BUTTON_TRIGGER_RIGHT,
+        "L3":       vg.DS4_BUTTONS.DS4_BUTTON_THUMB_LEFT,
+        "R3":       vg.DS4_BUTTONS.DS4_BUTTON_THUMB_RIGHT,
+        "SHARE":    vg.DS4_BUTTONS.DS4_BUTTON_SHARE,
+        "OPTIONS":  vg.DS4_BUTTONS.DS4_BUTTON_OPTIONS,
+    })
 
-DS4_SPECIAL_MAP = {
-    "PS":       vg.DS4_SPECIAL_BUTTONS.DS4_SPECIAL_BUTTON_PS,
-    "TOUCHPAD": vg.DS4_SPECIAL_BUTTONS.DS4_SPECIAL_BUTTON_TOUCHPAD,
-}
+    DS4_DPAD_MAP.update({
+        "UP":         vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTH,
+        "DOWN":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTH,
+        "LEFT":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_WEST,
+        "RIGHT":      vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_EAST,
+        "UP_RIGHT":   vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTHEAST,
+        "UP_LEFT":    vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NORTHWEST,
+        "DOWN_RIGHT": vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTHEAST,
+        "DOWN_LEFT":  vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_SOUTHWEST,
+        "NONE":       vg.DS4_DPAD_DIRECTIONS.DS4_BUTTON_DPAD_NONE,
+    })
 
-DS4_VALID_BUTTONS = list(DS4_BUTTON_MAP.keys()) + list(DS4_DPAD_MAP.keys()) + list(DS4_SPECIAL_MAP.keys())
+    DS4_SPECIAL_MAP.update({
+        "PS":       vg.DS4_SPECIAL_BUTTONS.DS4_SPECIAL_BUTTON_PS,
+        "TOUCHPAD": vg.DS4_SPECIAL_BUTTONS.DS4_SPECIAL_BUTTON_TOUCHPAD,
+    })
+
+    DS4_VALID_BUTTONS.extend(
+        list(DS4_BUTTON_MAP.keys()) + list(DS4_DPAD_MAP.keys()) + list(DS4_SPECIAL_MAP.keys())
+    )
+
+
+# ---------------------------------------------------------------------------
+# Costanti — mappe vuote, popolate da _init_vgamepad() nel lifespan
+# ---------------------------------------------------------------------------
+
+BUTTON_MAP: dict[str, int] = {}
+VALID_BUTTONS: list[str] = []
+DS4_BUTTON_MAP: dict[str, int] = {}
+DS4_DPAD_MAP: dict[str, int] = {}
+DS4_SPECIAL_MAP: dict[str, int] = {}
+DS4_VALID_BUTTONS: list[str] = []
 
 DEFAULT_DURATION   = 0.08   # secondi — quanto resta premuto
 DEFAULT_POST_DELAY = 0.06   # secondi — pausa dopo il rilascio
@@ -100,7 +136,7 @@ MAX_TOOL_DURATION = 45.0   # secondi
 @dataclass
 class ControllerSlot:
     """Slot per un controller virtuale registrato."""
-    gamepad: vg.VX360Gamepad | vg.VDS4Gamepad
+    gamepad: Any  # vg.VX360Gamepad | vg.VDS4Gamepad (lazy import)
     controller_type: str  # "xbox360" | "ds4"
 
 _controllers: dict[int, ControllerSlot] = {}
@@ -120,6 +156,12 @@ INIT_TIMEOUT = 8.0   # secondi — oltre questo, il lifespan fallisce con errore
 @asynccontextmanager
 async def lifespan(app):
     global _next_id, _active_id
+
+    # Lazy init: importa vgamepad e popola le mappe bottoni
+    _init_vgamepad()
+    if vg is None:
+        raise RuntimeError(_vg_error or "vgamepad non disponibile.")
+
     loop = asyncio.get_event_loop()
     try:
         gp = await asyncio.wait_for(
@@ -247,7 +289,7 @@ async def _press_button(button_const: int, duration: float, post_delay: float) -
     await asyncio.sleep(post_delay)
 
 
-async def _press_button_ds4(gp: vg.VDS4Gamepad, button: str, duration: float, post_delay: float) -> None:
+async def _press_button_ds4(gp: Any, button: str, duration: float, post_delay: float) -> None:
     """Preme e rilascia un bottone DS4 con gestione dpad/special."""
     btn_type, btn_val = _resolve_button_ds4(button)
     if btn_type == "button":
@@ -291,8 +333,8 @@ class PressInput(BaseModel):
     button: str = Field(
         ...,
         description=(
-            f"Tasto da premere. Valori validi Xbox: {', '.join(VALID_BUTTONS)}. "
-            f"Valori validi DS4: {', '.join(DS4_VALID_BUTTONS)}. "
+            "Tasto da premere. Xbox: A, B, X, Y, UP, DOWN, LEFT, RIGHT, LB, RB, START, BACK, L3, R3, GUIDE. "
+            "DS4: CROSS, CIRCLE, SQUARE, TRIANGLE, L1, R1, L2, R2, L3, R3, SHARE, OPTIONS, UP, DOWN, LEFT, RIGHT, PS, TOUCHPAD. "
             "A=conferma, B=indietro/Esc, UP/DOWN/LEFT/RIGHT=D-pad, "
             "LB/RB=pagina su/giù, X=info, Y=opzioni."
         ),
@@ -316,7 +358,7 @@ class PressNInput(BaseModel):
 
     button: str = Field(
         ...,
-        description=f"Tasto da premere ripetutamente. Valori validi: {', '.join(VALID_BUTTONS)}.",
+        description="Tasto da premere ripetutamente. Valori validi: A, B, X, Y, UP, DOWN, LEFT, RIGHT, LB, RB, START, BACK, L3, R3, GUIDE.",
     )
     n: int = Field(
         ...,
@@ -350,8 +392,8 @@ class SequenceInput(BaseModel):
     buttons: list[str] = Field(
         ...,
         description=(
-            f"Lista ordinata di tasti da premere in sequenza. "
-            f"Valori validi per ciascun tasto: {', '.join(VALID_BUTTONS)}. "
+            "Lista ordinata di tasti da premere in sequenza. "
+            "Valori validi: A, B, X, Y, UP, DOWN, LEFT, RIGHT, LB, RB, START, BACK, L3, R3, GUIDE. "
             "Esempio: ['DOWN', 'DOWN', 'A'] per scendere di 2 voci e confermare."
         ),
         min_length=1,

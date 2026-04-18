@@ -16,7 +16,10 @@
       "Bash(python -c \"import importlib.metadata; print\\(importlib.metadata.version\\('vgamepad'\\)\\)\")",
       "Bash(python -c \"import importlib.metadata; print\\('mcp:', importlib.metadata.version\\('mcp'\\)\\)\")",
       "Bash(python -c \"from mcp.server.fastmcp import FastMCP; import inspect; print\\(inspect.signature\\(FastMCP.__init__\\)\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(sc query ViGEmBus)",
+      "Bash(pip install --upgrade vgamepad)",
+      "Bash(pip install vgamepad==)"
     ]
   }
 }

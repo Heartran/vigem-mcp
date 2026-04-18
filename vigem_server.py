@@ -118,7 +118,7 @@ _next_id: int = 0
 INIT_TIMEOUT = 8.0   # secondi — oltre questo, il lifespan fallisce con errore chiaro
 
 @asynccontextmanager
-async def lifespan():
+async def lifespan(app):
     global _next_id, _active_id
     loop = asyncio.get_event_loop()
     try:

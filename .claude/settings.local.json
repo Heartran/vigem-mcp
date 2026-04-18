@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip show:*)",
+      "Bash(python -c \"import vgamepad; print\\(vgamepad.__file__\\)\")",
+      "Bash(python -c \"import vgamepad as vg; print\\(dir\\(vg\\)\\)\")",
+      "Bash(python -c \" import vgamepad as vg import inspect print\\(inspect.getsource\\(vg.VX360Gamepad\\)\\) \")",
+      "Bash(python -c ':*)",
+      "Bash(python -c \"import mcp; print\\(mcp.__version__\\)\")",
+      "Bash(python -c \"from importlib.metadata import version; print\\(version\\('mcp'\\)\\)\")",
+      "Bash(python -c \"from importlib.metadata import version; print\\('mcp:', version\\('mcp'\\)\\); print\\('pydantic:', version\\('pydantic'\\)\\)\")",
+      "Bash(python -c \"from mcp.server.fastmcp import FastMCP; help\\(FastMCP.run\\)\")",
+      "Bash(python -c \"import mcp; print\\(mcp.__file__\\)\")",
+      "Bash(python -c \"import vgamepad as vg; print\\('XUSB_BUTTON members:'\\); print\\([x for x in dir\\(vg.XUSB_BUTTON\\) if not x.startswith\\('_'\\)]\\)\")",
+      "Bash(python -c \"import vgamepad; print\\(vgamepad.__version__\\)\")",
+      "Bash(python -c \"import importlib.metadata; print\\(importlib.metadata.version\\('vgamepad'\\)\\)\")",
+      "Bash(python -c \"import importlib.metadata; print\\('mcp:', importlib.metadata.version\\('mcp'\\)\\)\")",
+      "Bash(python -c \"from mcp.server.fastmcp import FastMCP; import inspect; print\\(inspect.signature\\(FastMCP.__init__\\)\\)\")",
+      "Bash(python:*)"
+    ]
+  }
+}

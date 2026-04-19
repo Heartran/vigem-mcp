@@ -1,7 +1,7 @@
 {
   "manifest_version": "0.2",
   "name": "ViGEm Controller",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Virtual Xbox 360 and DualShock 4 gamepad emulation via ViGEmBus — runs locally via stdio.",
   "author": {
     "name": "Heartran",

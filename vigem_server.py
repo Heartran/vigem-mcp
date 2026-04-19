@@ -160,6 +160,15 @@ async def lifespan(app):
 
     yield
 
+    # Reset esplicito prima di rilasciare le reference: azzera lo stato
+    # sul bus ViGEm così da non lasciare input spuri se la distruzione
+    # del gamepad avviene in ritardo (GC non deterministico).
+    for slot in list(_controllers.values()):
+        try:
+            slot.gamepad.reset()
+            slot.gamepad.update()
+        except Exception:
+            pass
     _controllers.clear()
     _active_id = -1
     _next_id = 0
@@ -1170,23 +1179,21 @@ def _create_controller(controller_type: str, controller_id: int | None) -> tuple
     """Crea un controller virtuale e lo registra. Restituisce (id, type)."""
     global _next_id, _active_id
     ct = controller_type.lower()
-    if ct == "ds4":
-        gp = vg.VDS4Gamepad()
-    elif ct == "xbox360":
-        gp = vg.VX360Gamepad()
-    else:
+    if ct not in ("xbox360", "ds4"):
         raise ValueError(
             f"Tipo controller '{controller_type}' non valido. Usa 'xbox360' o 'ds4'."
         )
+    if controller_id is not None and controller_id in _controllers:
+        raise ValueError(
+            f"Controller {controller_id} già esistente. Distruggilo prima o usa un altro ID."
+        )
+
+    gp = vg.VDS4Gamepad() if ct == "ds4" else vg.VX360Gamepad()
 
     if controller_id is None:
         cid = _next_id
         _next_id += 1
     else:
-        if controller_id in _controllers:
-            raise ValueError(
-                f"Controller {controller_id} già esistente. Distruggilo prima o usa un altro ID."
-            )
         cid = controller_id
         if cid >= _next_id:
             _next_id = cid + 1
@@ -1334,7 +1341,13 @@ async def vigem_controller(params: ControllerInput) -> str:
 
             if action == "create":
                 cid, ct = _create_controller(params.controller_type, None)
-                return json.dumps({"ok": True, "action": "create", "controller_id": cid, "controller_type": ct})
+                return json.dumps({
+                    "ok": True,
+                    "action": "create",
+                    "controller_id": cid,
+                    "controller_type": ct,
+                    "active_id": _active_id,
+                })
 
             elif action == "destroy":
                 cid = params.controller_id

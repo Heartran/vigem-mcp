@@ -140,47 +140,37 @@ class ControllerSlot:
     controller_type: str  # "xbox360" | "ds4"
 
 _controllers: dict[int, ControllerSlot] = {}
-_active_id: int = 0
+_active_id: int = -1
 _next_id: int = 0
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — crea Xbox 360 (ID 0) e condivide tra tutti i tool
+# Lifespan — importa vgamepad senza creare alcun controller virtuale.
+# I controller vengono creati on demand via vigem_create_controller per
+# evitare di occupare slot XInput quando non servono (vedi issue #1).
 # ---------------------------------------------------------------------------
-
-# Timeout per l'inizializzazione del gamepad (ms VX360Gamepad() è sincrono/bloccante).
-# Claude Desktop va in timeout se il server non risponde entro ~10s all'init MCP.
-# Usiamo run_in_executor per non bloccare il loop + asyncio.wait_for per timeout.
-INIT_TIMEOUT = 8.0   # secondi — oltre questo, il lifespan fallisce con errore chiaro
 
 @asynccontextmanager
 async def lifespan(app):
     global _next_id, _active_id
 
-    # Lazy init: importa vgamepad e popola le mappe bottoni
     _init_vgamepad()
     if vg is None:
         raise RuntimeError(_vg_error or "vgamepad non disponibile.")
 
-    loop = asyncio.get_event_loop()
-    try:
-        gp = await asyncio.wait_for(
-            loop.run_in_executor(None, vg.VX360Gamepad),
-            timeout=INIT_TIMEOUT,
-        )
-    except asyncio.TimeoutError:
-        raise RuntimeError(
-            f"Timeout inizializzazione ViGEmBus dopo {INIT_TIMEOUT}s. "
-            "Verificare che il driver ViGEmBus sia installato e attivo."
-        )
-    except Exception as e:
-        raise RuntimeError(f"Errore inizializzazione ViGEmBus: {e}") from e
-    _controllers[0] = ControllerSlot(gamepad=gp, controller_type="xbox360")
-    _active_id = 0
-    _next_id = 1
     yield
+
+    # Reset esplicito prima di rilasciare le reference: azzera lo stato
+    # sul bus ViGEm così da non lasciare input spuri se la distruzione
+    # del gamepad avviene in ritardo (GC non deterministico).
+    for slot in list(_controllers.values()):
+        try:
+            slot.gamepad.reset()
+            slot.gamepad.update()
+        except Exception:
+            pass
     _controllers.clear()
-    _active_id = 0
+    _active_id = -1
     _next_id = 0
 
 
@@ -236,7 +226,10 @@ def _check_duration(estimated: float) -> str | None:
 def _get_active() -> ControllerSlot:
     """Restituisce lo slot del controller attivo."""
     if _active_id not in _controllers:
-        raise RuntimeError("Nessun controller attivo. Il server è avviato correttamente?")
+        raise RuntimeError(
+            "Nessun controller attivo. Crea un controller con vigem_create_controller "
+            "prima di usare i tool di input."
+        )
     return _controllers[_active_id]
 
 
@@ -582,6 +575,34 @@ class ControllerInput(BaseModel):
     controller_id: int | None = Field(
         default=None,
         description="ID del controller (usato per 'destroy' e 'select').",
+    )
+
+
+class CreateControllerInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    controller_type: str = Field(
+        default="xbox360",
+        description="Tipo controller: 'xbox360' (default) o 'ds4'.",
+    )
+    controller_id: int | None = Field(
+        default=None,
+        description=(
+            "ID opzionale per il nuovo controller. Se omesso, ne viene assegnato "
+            "uno automaticamente. Se specificato, deve essere libero."
+        ),
+    )
+
+
+class DestroyControllerInput(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    controller_id: int | None = Field(
+        default=None,
+        description=(
+            "ID del controller da distruggere. Se omesso, distrugge tutti i "
+            "controller attualmente registrati."
+        ),
     )
 
 
@@ -1150,6 +1171,142 @@ async def vigem_reset() -> str:
 
 
 # ---------------------------------------------------------------------------
+# Helper — creazione/distruzione controller (condivisi dai tool dedicati e
+# dal tool legacy vigem_controller)
+# ---------------------------------------------------------------------------
+
+def _create_controller(controller_type: str, controller_id: int | None) -> tuple[int, str]:
+    """Crea un controller virtuale e lo registra. Restituisce (id, type)."""
+    global _next_id, _active_id
+    ct = controller_type.lower()
+    if ct not in ("xbox360", "ds4"):
+        raise ValueError(
+            f"Tipo controller '{controller_type}' non valido. Usa 'xbox360' o 'ds4'."
+        )
+    if controller_id is not None and controller_id in _controllers:
+        raise ValueError(
+            f"Controller {controller_id} già esistente. Distruggilo prima o usa un altro ID."
+        )
+
+    gp = vg.VDS4Gamepad() if ct == "ds4" else vg.VX360Gamepad()
+
+    if controller_id is None:
+        cid = _next_id
+        _next_id += 1
+    else:
+        cid = controller_id
+        if cid >= _next_id:
+            _next_id = cid + 1
+
+    _controllers[cid] = ControllerSlot(gamepad=gp, controller_type=ct)
+    if _active_id == -1:
+        _active_id = cid
+    return cid, ct
+
+
+def _destroy_controller(controller_id: int) -> None:
+    """Distrugge un controller registrato per ID."""
+    global _active_id
+    if controller_id not in _controllers:
+        raise ValueError(f"Controller {controller_id} non trovato.")
+    del _controllers[controller_id]
+    if _active_id == controller_id:
+        _active_id = next(iter(_controllers), -1)
+
+
+# ---------------------------------------------------------------------------
+# Tool — Crea controller on demand
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="vigem_create_controller",
+    annotations={
+        "title": "Crea un controller virtuale on demand",
+        "readOnlyHint": False,
+        "destructiveHint": False,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def vigem_create_controller(params: CreateControllerInput) -> str:
+    """Crea un nuovo controller virtuale (Xbox 360 o DS4) e lo registra.
+
+    Il server non crea controller all'avvio per evitare di occupare slot XInput
+    quando non servono (es. conflitti con Steam Remote Play Together). I tool
+    di input richiedono almeno un controller attivo: invocare questo tool
+    all'inizio di una sessione e usare vigem_destroy_controller alla fine.
+
+    Se è il primo controller creato diventa automaticamente quello attivo.
+
+    Args:
+        params (CreateControllerInput): Parametri con:
+            - controller_type (str): 'xbox360' (default) o 'ds4'
+            - controller_id (int | None): ID opzionale; se omesso ne viene assegnato uno
+
+    Returns:
+        str: Conferma JSON con id e tipo del controller creato.
+    """
+    try:
+        async with _get_lock():
+            cid, ct = _create_controller(params.controller_type, params.controller_id)
+            return json.dumps({
+                "ok": True,
+                "controller_id": cid,
+                "controller_type": ct,
+                "active_id": _active_id,
+            })
+    except Exception as e:
+        return _error_response(e)
+
+
+# ---------------------------------------------------------------------------
+# Tool — Distruggi controller on demand
+# ---------------------------------------------------------------------------
+
+@mcp.tool(
+    name="vigem_destroy_controller",
+    annotations={
+        "title": "Distruggi uno o tutti i controller virtuali",
+        "readOnlyHint": False,
+        "destructiveHint": True,
+        "idempotentHint": False,
+        "openWorldHint": False,
+    },
+)
+async def vigem_destroy_controller(params: DestroyControllerInput) -> str:
+    """Distrugge un controller virtuale per ID, oppure tutti se omesso.
+
+    Liberare gli slot XInput appena terminata la sessione di input evita
+    di interferire con i controller fisici (es. Steam Remote Play Together
+    che assegna gli slot in ordine di apparizione sul bus ViGEm).
+
+    Args:
+        params (DestroyControllerInput): Parametri con:
+            - controller_id (int | None): ID controller, oppure None per distruggere tutti
+
+    Returns:
+        str: Conferma JSON con la lista degli ID distrutti.
+    """
+    try:
+        async with _get_lock():
+            if params.controller_id is None:
+                destroyed = sorted(_controllers.keys())
+                for cid in destroyed:
+                    _destroy_controller(cid)
+            else:
+                _destroy_controller(params.controller_id)
+                destroyed = [params.controller_id]
+            return json.dumps({
+                "ok": True,
+                "destroyed": destroyed,
+                "active_id": _active_id,
+                "remaining": sorted(_controllers.keys()),
+            })
+    except Exception as e:
+        return _error_response(e)
+
+
+# ---------------------------------------------------------------------------
 # Tool — Gestione controller
 # ---------------------------------------------------------------------------
 
@@ -1183,27 +1340,20 @@ async def vigem_controller(params: ControllerInput) -> str:
             action = params.action.lower()
 
             if action == "create":
-                ct = params.controller_type.lower()
-                if ct == "ds4":
-                    gp = vg.VDS4Gamepad()
-                elif ct == "xbox360":
-                    gp = vg.VX360Gamepad()
-                else:
-                    raise ValueError(f"Tipo controller '{params.controller_type}' non valido. Usa 'xbox360' o 'ds4'.")
-                cid = _next_id
-                _controllers[cid] = ControllerSlot(gamepad=gp, controller_type=ct)
-                _next_id += 1
-                return json.dumps({"ok": True, "action": "create", "controller_id": cid, "controller_type": ct})
+                cid, ct = _create_controller(params.controller_type, None)
+                return json.dumps({
+                    "ok": True,
+                    "action": "create",
+                    "controller_id": cid,
+                    "controller_type": ct,
+                    "active_id": _active_id,
+                })
 
             elif action == "destroy":
                 cid = params.controller_id
                 if cid is None:
                     raise ValueError("controller_id richiesto per 'destroy'.")
-                if cid not in _controllers:
-                    raise ValueError(f"Controller {cid} non trovato.")
-                del _controllers[cid]
-                if _active_id == cid:
-                    _active_id = next(iter(_controllers), -1)
+                _destroy_controller(cid)
                 return json.dumps({"ok": True, "action": "destroy", "controller_id": cid})
 
             elif action == "select":
